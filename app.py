@@ -2,7 +2,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from src.ai_assistant import ask_tenantease_ai
-
+from src.property_service import (
+    add_tenant,
+    get_vacant_rooms,
+    get_all_tenants,
+)
 from src.reminder_service import (
     get_tenants_needing_reminders,
     generate_reminder_details,
@@ -497,38 +501,157 @@ elif page == "Tenants":
     st.title("Tenant Directory")
     st.caption("Search tenant payment records.")
 
-    if payment_df.empty:
-        st.info("No tenant payment records available.")
+    # Add New Tenant form
+    with st.expander("➕ Add New Tenant", expanded=False):
+
+        vacant_rooms = get_vacant_rooms()
+
+        if not vacant_rooms:
+            st.info(
+                "No vacant rooms are currently available. "
+                "Add a vacant room before registering a tenant."
+            )
+
+        else:
+            room_options = {
+                (
+                    f"{room['property_name']} | "
+                    f"Room {room['room_number']} | "
+                    f"₹{room['monthly_rent']:,.0f}/month"
+                ): room["room_id"]
+                for room in vacant_rooms
+            }
+
+            with st.form("add_tenant_form"):
+
+                tenant_name = st.text_input(
+                    "Tenant Name *",
+                    placeholder="Enter tenant's full name",
+                )
+
+                email = st.text_input(
+                    "Email Address",
+                    placeholder="tenant@example.com",
+                )
+
+                phone = st.text_input(
+                    "Phone Number",
+                    placeholder="Enter phone number",
+                )
+
+                selected_room = st.selectbox(
+                    "Select Vacant Room *",
+                    options=list(room_options.keys()),
+                )
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    lease_start = st.date_input(
+                        "Lease Start Date",
+                        value=None,
+                    )
+
+                with col2:
+                    lease_end = st.date_input(
+                        "Lease End Date",
+                        value=None,
+                    )
+
+                submitted = st.form_submit_button(
+                    "Add Tenant",
+                    use_container_width=True,
+                )
+
+                if submitted:
+
+                    if not tenant_name.strip():
+                        st.error("Please enter the tenant's name.")
+
+                    else:
+                        room_id = room_options[selected_room]
+
+                        success, message = add_tenant(
+                            tenant_name=tenant_name,
+                            email=email,
+                            phone=phone,
+                            room_id=room_id,
+                            lease_start=(
+                                lease_start.isoformat()
+                                if lease_start else None
+                            ),
+                            lease_end=(
+                                lease_end.isoformat()
+                                if lease_end else None
+                            ),
+                        )
+
+                        if success:
+                            st.success(message)
+                            st.rerun()
+
+                        else:
+                            st.error(message)
+
+                            
+
+    st.subheader("Registered Tenants")
+
+    tenant_df = pd.DataFrame(get_all_tenants())
+
+    if tenant_df.empty:
+        st.info("No tenants registered yet. Use the form above to add one.")
 
     else:
         search = st.text_input(
-            "Search by tenant or property name"
+            "Search by tenant or property name",
+            key="tenant_directory_search",
         )
 
-        filtered_df = payment_df.copy()
+        filtered_df = tenant_df.copy()
 
         if search:
             mask = (
                 filtered_df["tenant_name"].str.contains(
-                    search,
-                    case=False,
-                    na=False,
+                    search, case=False, na=False
                 )
                 |
                 filtered_df["property_name"].str.contains(
-                    search,
-                    case=False,
-                    na=False,
+                    search, case=False, na=False
                 )
             )
-
             filtered_df = filtered_df[mask]
 
+        display_columns = [
+            "tenant_name",
+            "email",
+            "phone",
+            "property_name",
+            "room_number",
+            "monthly_rent",
+            "lease_start",
+            "lease_end",
+        ]
+
         st.dataframe(
-            filtered_df,
+            filtered_df[display_columns],
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "tenant_name": st.column_config.TextColumn("Tenant"),
+                "email": st.column_config.TextColumn("Email"),
+                "phone": st.column_config.TextColumn("Phone"),
+                "property_name": st.column_config.TextColumn("Property"),
+                "room_number": st.column_config.TextColumn("Room"),
+                "monthly_rent": st.column_config.NumberColumn(
+                    "Monthly Rent (₹)", format="₹%.2f"
+                ),
+                "lease_start": st.column_config.DateColumn("Lease Start"),
+                "lease_end": st.column_config.DateColumn("Lease End"),
+            },
         )
+
+        st.caption(f"Total registered tenants: {len(filtered_df)}")
 
 
 # --------------------------------------------------

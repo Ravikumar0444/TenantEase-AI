@@ -1,5 +1,6 @@
 from database.db import get_connection
-
+import sqlite3
+from database.db import get_connection
 
 def get_dashboard_metrics():
     """Calculate key property and rental metrics."""
@@ -105,3 +106,143 @@ def get_tenant_payment_records():
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+def add_tenant(
+    tenant_name,
+    email,
+    phone,
+    room_id,
+    lease_start,
+    lease_end,
+):
+    """
+    Add a tenant to a vacant room.
+
+    Returns:
+        (True, success_message) if successful.
+        (False, error_message) if unsuccessful.
+    """
+
+    tenant_name = tenant_name.strip()
+    email = email.strip() or None
+    phone = phone.strip() or None
+
+    # Validate tenant name.
+    if not tenant_name:
+        return False, "Tenant name is required."
+
+    # Validate lease dates.
+    if lease_start and lease_end and lease_end < lease_start:
+        return False, "Lease end date cannot be before lease start date."
+
+    try:
+        with get_connection() as connection:
+
+            # Check whether the selected room exists.
+            room = connection.execute(
+                """
+                SELECT room_id, status
+                FROM rooms
+                WHERE room_id = ?
+                """,
+                (room_id,),
+            ).fetchone()
+
+            if room is None:
+                return False, "Selected room does not exist."
+
+            # Check whether the room is vacant.
+            if room["status"] != "vacant":
+                return False, "This room is already occupied."
+
+            # Insert tenant details.
+            connection.execute(
+                """
+                INSERT INTO tenants (
+                    room_id,
+                    tenant_name,
+                    email,
+                    phone,
+                    lease_start,
+                    lease_end
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    room_id,
+                    tenant_name,
+                    email,
+                    phone,
+                    lease_start,
+                    lease_end,
+                ),
+            )
+
+            # Update the room status.
+            connection.execute(
+                """
+                UPDATE rooms
+                SET status = 'occupied'
+                WHERE room_id = ?
+                """,
+                (room_id,),
+            )
+
+        return True, f"Tenant '{tenant_name}' added successfully!"
+
+    except sqlite3.IntegrityError:
+        return False, (
+            "Could not add tenant. The room may already be assigned "
+            "to another tenant."
+        )
+
+    except sqlite3.Error as error:
+        return False, f"Database error: {error}"
+
+def get_vacant_rooms():
+    """Return all vacant rooms with their property names."""
+
+    with get_connection() as connection:
+        rooms = connection.execute(
+            """
+            SELECT
+                r.room_id,
+                r.room_number,
+                r.monthly_rent,
+                p.property_name
+            FROM rooms AS r
+            JOIN properties AS p
+                ON r.property_id = p.property_id
+            WHERE r.status = 'vacant'
+            ORDER BY p.property_name, r.room_number
+            """
+        ).fetchall()
+
+    return [dict(room) for room in rooms]
+
+def get_all_tenants():
+    """Return all registered tenants with their room and property details."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                t.tenant_id,
+                t.tenant_name,
+                t.email,
+                t.phone,
+                t.lease_start,
+                t.lease_end,
+                r.room_number,
+                r.monthly_rent,
+                r.status AS room_status,
+                p.property_name
+            FROM tenants AS t
+            JOIN rooms AS r
+                ON t.room_id = r.room_id
+            JOIN properties AS p
+                ON r.property_id = p.property_id
+            ORDER BY t.tenant_name
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]    

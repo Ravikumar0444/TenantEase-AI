@@ -5,9 +5,10 @@ from database.db import get_connection
 
 def get_outstanding_rent(rent_month=None):
     """
-    Calculate unpaid rent for a particular month.
+    Calculate outstanding rent.
 
-    Outstanding rent = Amount due - Amount paid.
+    Outstanding rent cannot be negative.
+    Only actual payment records are included.
     """
 
     with get_connection() as connection:
@@ -15,8 +16,16 @@ def get_outstanding_rent(rent_month=None):
         if rent_month:
             query = """
                 SELECT
-                    COALESCE(SUM(amount_due - amount_paid), 0)
-                    AS outstanding_rent
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN amount_due > amount_paid
+                                THEN amount_due - amount_paid
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS outstanding_rent
                 FROM payments
                 WHERE rent_month = ?
             """
@@ -28,10 +37,17 @@ def get_outstanding_rent(rent_month=None):
         else:
             query = """
                 SELECT
-                    COALESCE(SUM(amount_due - amount_paid), 0)
-                    AS outstanding_rent
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN amount_due > amount_paid
+                                THEN amount_due - amount_paid
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS outstanding_rent
                 FROM payments
-                WHERE amount_paid < amount_due
             """
 
             result = connection.execute(query).fetchone()
