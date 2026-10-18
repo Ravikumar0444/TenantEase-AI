@@ -1,11 +1,15 @@
 from database.db import get_connection
+from datetime import date
 
+def get_tenants_needing_reminders(as_of=None):
+    """
+    Return tenants with outstanding payments past their due date.
+    """
 
-def get_tenants_needing_reminders():
-    """
-    Return tenants who have an outstanding payment
-    past its due date.
-    """
+    if as_of is None:
+        as_of = date.today()
+
+    as_of = as_of.isoformat()
 
     query = """
         SELECT
@@ -26,16 +30,15 @@ def get_tenants_needing_reminders():
             ON t.room_id = r.room_id
         JOIN properties pr
             ON r.property_id = pr.property_id
-        WHERE p.due_date < date('now')
+        WHERE p.due_date < ?
           AND p.amount_paid < p.amount_due
         ORDER BY p.due_date ASC
     """
 
     with get_connection() as connection:
-        rows = connection.execute(query).fetchall()
+        rows = connection.execute(query, (as_of,)).fetchall()
 
     return [dict(row) for row in rows]
-
 
 def generate_reminder_details(tenant_id):
     """
