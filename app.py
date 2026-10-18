@@ -1,6 +1,14 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from src.ai_assistant import ask_tenantease_ai
+
+from src.reminder_service import (
+    get_tenants_needing_reminders,
+    generate_reminder_details,
+)
+
+from src.ai_assistant import generate_rent_reminder
 
 from src.property_service import (
     get_dashboard_metrics,
@@ -182,6 +190,7 @@ with st.sidebar:
             "Tenants",
             "Rent Intelligence",
             "AI Assistant",
+            "Rent Reminders",
         ],
         label_visibility="collapsed",
     )
@@ -586,41 +595,127 @@ elif page == "AI Assistant":
 
     st.title("TenantEase AI Assistant")
 
-    st.markdown(
-        """
-        <div class="assistant-card">
-            <div class="assistant-title">
-                Your property management copilot
-            </div>
-            <p class="assistant-text">
-                Ask questions about rental income, tenants,
-                occupancy, and outstanding payments.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.write(
+        "Ask questions about rent collection, overdue payments, "
+        "vacant rooms, and property performance."
     )
-
-    st.write("")
 
     st.info(
-        "The AI integration will be implemented in a later phase. "
-        "For now, you can explore the dashboard and rent records."
+        "This demonstration uses fictional tenant and property data."
     )
 
-    st.markdown("### Example questions")
+    if "ai_messages" not in st.session_state:
+        st.session_state.ai_messages = []
 
-    examples = [
-        "How much rent is outstanding?",
-        "Which tenants have unpaid rent?",
-        "What is my current occupancy rate?",
-        "Which properties have vacant rooms?",
-    ]
+    for message in st.session_state.ai_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    for question in examples:
-        st.markdown(f"- {question}")
+    question = st.chat_input(
+        "Ask about rent, tenants, or vacant rooms..."
+    )
 
+    if question:
+        st.session_state.ai_messages.append(
+            {
+                "role": "user",
+                "content": question,
+            }
+        )
 
+        with st.chat_message("user"):
+            st.markdown(question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing property records..."):
+                answer = ask_tenantease_ai(question)
+
+            st.markdown(answer)
+
+        st.session_state.ai_messages.append(
+            {
+                "role": "assistant",
+                "content": answer,
+            }
+        )
+
+elif page == "Rent Reminders":
+
+    st.title("Rent Reminder Center")
+
+    st.write(
+        "Review outstanding payments and generate "
+        "personalized reminder drafts."
+    )
+
+    st.warning(
+        "Demo mode: reminders are generated for review only. "
+        "No emails or SMS messages will be sent."
+    )
+
+    overdue_tenants = get_tenants_needing_reminders()
+
+    if not overdue_tenants:
+        st.success("No overdue payments were found.")
+    else:
+        import pandas as pd
+
+        df = pd.DataFrame(overdue_tenants)
+
+        st.subheader("Outstanding Payments")
+
+        st.dataframe(
+            df[
+                [
+                    "tenant_name",
+                    "property_name",
+                    "room_number",
+                    "rent_month",
+                    "outstanding_amount",
+                    "due_date",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        tenant_options = {}
+
+        for payment in overdue_tenants:
+            tenant_id = payment["tenant_id"]
+            tenant_name = payment["tenant_name"]
+
+            tenant_options[
+                f"{tenant_name} — Tenant ID {tenant_id}"
+            ] = tenant_id
+
+        selected_tenant = st.selectbox(
+            "Select a tenant",
+            list(tenant_options.keys()),
+        )
+
+        if st.button("Generate Reminder Draft"):
+            tenant_id = tenant_options[selected_tenant]
+
+            payment_details = generate_reminder_details(
+                tenant_id
+            )
+
+            with st.spinner("Drafting reminder with Gemini..."):
+                reminder = generate_rent_reminder(
+                    payment_details
+                )
+
+            st.subheader("Reminder Draft")
+            st.text_area(
+                "Review and edit before sending",
+                value=reminder,
+                height=300,
+            )
+
+            st.caption(
+                "This draft has not been sent to the tenant."
+            )      
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
