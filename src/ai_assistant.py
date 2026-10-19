@@ -353,6 +353,119 @@ def find_tenant_context(tenant_name):
 
     return {"matches": results}
 
+def get_direct_property_answer(question):
+    """Answer basic property and room questions directly from SQLite."""
+
+    from database.db import get_connection
+
+    text = question.lower().strip()
+
+    with get_connection() as connection:
+
+        # Property count
+        if any(phrase in text for phrase in [
+            "how many properties",
+            "number of properties",
+            "total properties",
+            "count properties",
+        ]):
+            count = connection.execute(
+                "SELECT COUNT(*) FROM properties"
+            ).fetchone()[0]
+
+            return f"**Total properties:** {count}"
+
+        # Total, occupied, and vacant rooms
+        if any(phrase in text for phrase in [
+            "room occupancy",
+            "occupancy rate",
+            "how many rooms",
+            "room count",
+            "occupied and vacant",
+            "occupied rooms",
+            "vacant rooms",
+            "how many occupied",
+            "how many vacant",
+        ]):
+
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_rooms,
+                    COALESCE(
+                        SUM(CASE WHEN status = 'occupied'
+                            THEN 1 ELSE 0 END), 0
+                    ) AS occupied_rooms,
+                    COALESCE(
+                        SUM(CASE WHEN status = 'vacant'
+                            THEN 1 ELSE 0 END), 0
+                    ) AS vacant_rooms
+                FROM rooms
+                """
+            ).fetchone()
+
+            total = row["total_rooms"]
+            occupied = row["occupied_rooms"]
+            vacant = row["vacant_rooms"]
+
+            occupancy = (
+                occupied / total * 100 if total else 0
+            )
+
+            return (
+                "### Room Occupancy Summary\n\n"
+                f"- **Total Rooms:** {total}\n"
+                f"- **Occupied Rooms:** {occupied}\n"
+                f"- **Vacant Rooms:** {vacant}\n"
+                f"- **Occupancy Rate:** {occupancy:.1f}%"
+            )
+
+        # List properties
+        if any(phrase in text for phrase in [
+            "list properties",
+            "show properties",
+            "all properties",
+            "property names",
+        ]):
+            rows = connection.execute(
+                """
+                SELECT
+                    p.property_name,
+                    p.city,
+                    COUNT(r.room_id) AS total_rooms,
+                    COALESCE(
+                        SUM(CASE WHEN r.status = 'occupied'
+                            THEN 1 ELSE 0 END), 0
+                    ) AS occupied_rooms,
+                    COALESCE(
+                        SUM(CASE WHEN r.status = 'vacant'
+                            THEN 1 ELSE 0 END), 0
+                    ) AS vacant_rooms
+                FROM properties p
+                LEFT JOIN rooms r
+                    ON p.property_id = r.property_id
+                GROUP BY p.property_id, p.property_name, p.city
+                ORDER BY p.property_name
+                """
+            ).fetchall()
+
+            if not rows:
+                return "No properties are currently registered."
+
+            lines = ["### Property Overview", ""]
+
+            for row in rows:
+                lines.append(
+                    f"- **{row['property_name']}** ({row['city']})"
+                    f" — Total rooms: {row['total_rooms']},"
+                    f" Occupied: {row['occupied_rooms']},"
+                    f" Vacant: {row['vacant_rooms']}"
+                )
+
+            return "\n".join(lines)
+
+    return None
+
 def ask_tenantease_ai(question):
     """Answer property-management questions using database context."""
 
@@ -360,6 +473,18 @@ def ask_tenantease_ai(question):
         return "Please enter a question."
 
     normalized_question = question.lower().strip()
+    
+    # Answer basic property and room questions directly from SQLite.
+    try:
+        direct_answer = get_direct_property_answer(
+            normalized_question
+        )
+
+        if direct_answer is not None:
+            return direct_answer
+
+    except Exception as error:
+        print(f"Direct property answer error: {error}")
 
     # Handle tenant-list questions directly from the database.
     tenant_list_phrases = [
@@ -483,8 +608,26 @@ USER QUESTION:
         traceback.print_exc()
         print("=========================================\n")
 
+        error_text = str(error).lower()
+
+        if (
+            "503" in error_text
+            or "unavailable" in error_text
+        ):
+            return (
+                "⚠️ **Gemini is temporarily unavailable.**\n\n"
+                "Your database is still available, but this "
+                "question requires the AI service.\n\n"
+                "Please try again in a few minutes, or ask a "
+                "direct question such as:\n"
+                "- How many properties do I have?\n"
+                "- How many rooms are occupied and vacant?\n"
+                "- List all properties."
+            )
+
         return (
-            f"AI Assistant error: {type(error).__name__}: {error}\n\n"
+            f"⚠️ **AI Assistant error:** "
+            f"{type(error).__name__}: {error}\n\n"
             "Please check the terminal for additional details."
         )
         

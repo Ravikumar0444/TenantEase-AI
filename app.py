@@ -9,6 +9,14 @@ from src.property_service import (
     delete_tenant,
     deactivate_tenant,
 )
+from src.property_service import (
+    get_all_properties,
+    add_property,
+    update_property,
+    delete_property,
+    get_property_room_summary,
+    add_room,
+)
 
 from src.rent_service import settle_all_tenant_payments
 from src.rent_service import get_tenants_with_outstanding_payments
@@ -463,40 +471,259 @@ if page == "Dashboard":
 
 elif page == "Properties":
 
-    st.title("Properties")
-    st.caption("Explore the properties in your portfolio.")
+    st.title("🏢 Property Management")
+    st.caption("Add, view, edit, and manage your properties.")
 
-    from database.db import get_connection
+    # Fetch the latest property records.
+    properties = get_all_properties()
 
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT
-                p.property_name,
-                p.city,
-                COUNT(r.room_id) AS total_rooms,
-                SUM(
-                    CASE WHEN r.status = 'occupied'
-                    THEN 1 ELSE 0 END
-                ) AS occupied_rooms,
-                SUM(
-                    CASE WHEN r.status = 'vacant'
-                    THEN 1 ELSE 0 END
-                ) AS vacant_rooms
-            FROM properties p
-            LEFT JOIN rooms r
-                ON p.property_id = r.property_id
-            GROUP BY p.property_id
-            ORDER BY p.property_name
-            """
-        ).fetchall()
+    # Property summary.
+    st.metric("Total Properties", len(properties))
 
-    st.dataframe(
-        pd.DataFrame([dict(row) for row in rows]),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.divider()
 
+    st.subheader("🚪 Add Room to Property")
+
+    properties_for_rooms = get_all_properties()
+
+    if not properties_for_rooms:
+        st.info("Add a property before creating rooms.")
+    else:
+        property_options = {
+            f"{p['property_name']} — {p['city']} (ID: {p['property_id']})":
+            p["property_id"]
+            for p in properties_for_rooms
+        }
+
+        with st.form("add_room_form", clear_on_submit=True):
+            selected_property = st.selectbox(
+                "Select Property",
+                options=list(property_options.keys()),
+            )
+
+            room_number = st.text_input(
+                "Room Number",
+                placeholder="e.g., 101",
+            )
+
+            monthly_rent = st.number_input(
+                "Monthly Rent (₹)",
+                min_value=1.0,
+                value=8000.0,
+                step=500.0,
+            )
+
+            room_submitted = st.form_submit_button(
+                "➕ Add Room",
+                use_container_width=True,
+            )
+
+            if room_submitted:
+                property_id = property_options[selected_property]
+
+                success, message = add_room(
+                    property_id,
+                    room_number,
+                    monthly_rent,
+                )
+
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+
+    # ---------- ADD PROPERTY ----------
+    st.subheader("➕ Add New Property")
+
+    with st.form("add_property_form", clear_on_submit=True):
+
+        property_name = st.text_input("Property Name")
+        address = st.text_input("Address")
+        city = st.text_input("City")
+
+        property_type = st.selectbox(
+            "Property Type",
+            ["Residential", "Commercial", "Mixed Use", "Other"],
+        )
+
+        add_submitted = st.form_submit_button(
+            "Add Property",
+            use_container_width=True,
+        )
+
+        if add_submitted:
+
+            success, message = add_property(
+                property_name,
+                address,
+                city,
+                property_type,
+            )
+
+            if success:
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+    st.divider()
+
+    # ---------- VIEW PROPERTIES ----------
+    st.subheader("📋 Existing Properties")
+
+    properties = get_all_properties()
+
+    if not properties:
+
+        st.info("No properties found. Add your first property above.")
+
+    else:
+
+        for property_data in properties:
+
+            property_id = property_data["property_id"]
+
+            with st.expander(
+                f"🏠 {property_data['property_name']} "
+                f"— {property_data['city']}"
+            ):
+
+                st.write(f"**Property ID:** {property_id}")
+                st.write(f"**Address:** {property_data['address']}")
+                st.write(f"**Type:** {property_data['property_type']}")
+                room_summary = get_property_room_summary(property_id)
+
+                st.markdown("#### 🏠 Room Overview")
+
+                col1, col2, col3, col4 = st.columns(4)
+
+                col1.metric("Total Rooms", room_summary["total_rooms"])
+                col2.metric("Occupied", room_summary["occupied_rooms"])
+                col3.metric("Vacant", room_summary["vacant_rooms"])
+                col4.metric("Occupancy", f"{room_summary['occupancy_rate']}%")
+
+                # ---------- EDIT PROPERTY ----------
+                st.markdown("#### Edit Property")
+
+                with st.form(f"edit_property_{property_id}"):
+
+                    edited_name = st.text_input(
+                        "Property Name",
+                        value=property_data["property_name"],
+                        key=f"edit_name_{property_id}",
+                    )
+
+                    edited_address = st.text_input(
+                        "Address",
+                        value=property_data["address"],
+                        key=f"edit_address_{property_id}",
+                    )
+
+                    edited_city = st.text_input(
+                        "City",
+                        value=property_data["city"],
+                        key=f"edit_city_{property_id}",
+                    )
+
+                    available_types = [
+                        "Residential",
+                        "Commercial",
+                        "Mixed Use",
+                        "Other",
+                    ]
+
+                    current_type = property_data["property_type"]
+
+                    if current_type not in available_types:
+                        available_types.append(current_type)
+
+                    edited_type = st.selectbox(
+                        "Property Type",
+                        available_types,
+                        index=available_types.index(current_type),
+                        key=f"edit_type_{property_id}",
+                    )
+
+                    edit_submitted = st.form_submit_button(
+                        "Save Changes",
+                        use_container_width=True,
+                    )
+
+                    if edit_submitted:
+
+                        success, message = update_property(
+                            property_id,
+                            edited_name,
+                            edited_address,
+                            edited_city,
+                            edited_type,
+                        )
+
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+
+                # ---------- DELETE PROPERTY ----------
+                st.markdown("#### Delete Property")
+
+                has_rooms = False
+
+                from database.db import get_connection
+
+                with get_connection() as connection:
+
+                    room_count = connection.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM rooms
+                        WHERE property_id = ?
+                        """,
+                        (property_id,),
+                    ).fetchone()[0]
+
+                    has_rooms = room_count > 0
+
+                if has_rooms:
+
+                    st.warning(
+                        f"This property has {room_count} associated room(s). "
+                        "Permanent deletion is blocked to protect tenant "
+                        "and payment records."
+                    )
+
+                else:
+
+                    confirm_delete = st.checkbox(
+                        "I confirm that I want to delete this property.",
+                        key=f"confirm_delete_{property_id}",
+                    )
+
+                    if st.button(
+                        "🗑️ Delete Property",
+                        key=f"delete_property_{property_id}",
+                        use_container_width=True,
+                    ):
+
+                        if not confirm_delete:
+
+                            st.warning(
+                                "Please confirm deletion first."
+                            )
+
+                        else:
+
+                            success, message = delete_property(
+                                property_id
+                            )
+
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
 
 # --------------------------------------------------
 # TENANTS PAGE
@@ -765,29 +992,136 @@ elif page == "Rent Intelligence":
 
 elif page == "AI Assistant":
 
-    st.title("TenantEase AI Assistant")
+    # ---------- PAGE HEADER ----------
+    st.title("✦ TenantEase AI")
+    st.markdown(
+        """
+        <style>
+        /* Modern chat input container */
+        div[data-testid="stChatInput"] {
+            border-radius: 24px;
+            border: 1px solid #D1D5DB;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.06);
+            background-color: var(--secondary-background-color);
+            padding: 4px;
+        }
 
-    st.write(
-        "Ask questions about rent collection, overdue payments, "
-        "vacant rooms, and property performance."
+        /* Input area */
+        div[data-testid="stChatInput"] textarea {
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        /* Focus effect */
+        div[data-testid="stChatInput"]:focus-within {
+            border-color: #6366F1;
+            box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+        }
+
+        /* Send button */
+        div[data-testid="stChatInput"] button {
+            border-radius: 50%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    st.caption(
+        "Your intelligent property management assistant"
     )
 
-    st.info(
-        "This demonstration uses fictional tenant and property data."
-    )
+    st.divider()
 
+    # ---------- SESSION STATE ----------
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
 
+    # ---------- WELCOME SCREEN ----------
+    if not st.session_state.ai_messages:
+
+        st.markdown(
+            """
+            <div style="text-align: center; padding: 35px 10px 20px 10px;">
+                <h2>How can I help you today?</h2>
+                <p style="font-size: 16px; color: gray;">
+                    Ask me about tenants, rent collection,
+                    overdue payments, or vacant rooms.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### ✨ Try asking")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button(
+                "💰  Check rent collection",
+                use_container_width=True,
+            ):
+                st.session_state.ai_selected_question = (
+                    "How much rent was collected in October 2026?"
+                )
+
+            if st.button(
+                "🏠  Find vacant rooms",
+                use_container_width=True,
+            ):
+                st.session_state.ai_selected_question = (
+                    "Show me all vacant rooms"
+                )
+
+        with col2:
+            if st.button(
+                "⚠️  Overdue payments",
+                use_container_width=True,
+            ):
+                st.session_state.ai_selected_question = (
+                    "Who has overdue payments?"
+                )
+
+            if st.button(
+                "👥  List all tenants",
+                use_container_width=True,
+            ):
+                st.session_state.ai_selected_question = (
+                    "List all tenants"
+                )
+
+    # ---------- CHAT HISTORY ----------
     for message in st.session_state.ai_messages:
+
         with st.chat_message(message["role"]):
+
             st.markdown(message["content"])
 
-    question = st.chat_input(
-        "Ask about rent, tenants, or vacant rooms..."
+# ----------CHAT INPUT ----------
+    typed_question = st.chat_input(
+        "Message TenantEase AI...",
+        key="tenant_ai_chat_input",
+        max_chars=2000,
     )
 
+    # Handle either a typed question or a suggested question.
+    question = typed_question
+
+    if not question:
+        question = st.session_state.pop(
+            "ai_selected_question",
+            None,
+        )
+    else:
+        st.session_state.pop(
+            "ai_selected_question",
+            None,
+        )
+
+    # ---------- PROCESS QUESTION ----------
     if question:
+
         st.session_state.ai_messages.append(
             {
                 "role": "user",
@@ -799,7 +1133,10 @@ elif page == "AI Assistant":
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing property records..."):
+
+            with st.spinner(
+                "Analyzing your property records..."
+            ):
                 answer = ask_tenantease_ai(question)
 
             st.markdown(answer)
@@ -811,6 +1148,31 @@ elif page == "AI Assistant":
             }
         )
 
+        # Rerun so the conversation displays consistently.
+        st.rerun()
+
+    # ---------- FOOTER ----------
+    st.divider()
+
+    st.caption(
+        "TenantEase AI may use AI-generated responses. "
+        "Always verify important financial information "
+        "against your database."
+    )
+
+    if st.session_state.ai_messages:
+
+        if st.button(
+            "🗑️ Clear conversation",
+            use_container_width=False,
+        ):
+            st.session_state.ai_messages = []
+            st.session_state.pop(
+                "ai_selected_question",
+                None,
+            )
+            st.rerun()
+            
 elif page == "Rent Reminders":
 
     st.title("Rent Reminder Center")

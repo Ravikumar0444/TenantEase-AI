@@ -1,6 +1,5 @@
 from database.db import get_connection
 import sqlite3
-from database.db import get_connection
 
 def get_dashboard_metrics():
     """Calculate key property and rental metrics."""
@@ -435,3 +434,234 @@ def deactivate_tenant(tenant_id):
         f"Tenant '{tenant['tenant_name']}' deactivated successfully. "
         "Payment history has been preserved."
     )
+
+def get_all_properties():
+    """Return all properties from the database."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                property_id,
+                property_name,
+                address,
+                city,
+                property_type
+            FROM properties
+            ORDER BY property_name
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def add_property(property_name, address, city, property_type="Residential"):
+    """Add a new property to the database."""
+    property_name = property_name.strip()
+    address = address.strip()
+    city = city.strip()
+    property_type = property_type.strip()
+
+    if not property_name or not address or not city:
+        return False, "Property name, address, and city are required."
+
+    try:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO properties (
+                    property_name,
+                    address,
+                    city,
+                    property_type
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (property_name, address, city, property_type),
+            )
+
+        return True, f"Property '{property_name}' added successfully."
+
+    except sqlite3.Error as error:
+        return False, f"Could not add property: {error}"
+
+
+def update_property(
+    property_id,
+    property_name,
+    address,
+    city,
+    property_type="Residential",
+):
+    """Update an existing property's details."""
+    property_name = property_name.strip()
+    address = address.strip()
+    city = city.strip()
+    property_type = property_type.strip()
+
+    if not property_name or not address or not city:
+        return False, "Property name, address, and city are required."
+
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE properties
+                SET property_name = ?,
+                    address = ?,
+                    city = ?,
+                    property_type = ?
+                WHERE property_id = ?
+                """,
+                (
+                    property_name,
+                    address,
+                    city,
+                    property_type,
+                    property_id,
+                ),
+            )
+
+            if cursor.rowcount == 0:
+                return False, "Property not found."
+
+        return True, f"Property '{property_name}' updated successfully."
+
+    except sqlite3.Error as error:
+        return False, f"Could not update property: {error}"
+
+
+def delete_property(property_id):
+    """
+    Delete a property only when it has no associated rooms.
+    Properties with rooms must be handled safely first.
+    """
+    try:
+        with get_connection() as connection:
+            property_row = connection.execute(
+                """
+                SELECT property_id, property_name
+                FROM properties
+                WHERE property_id = ?
+                """,
+                (property_id,),
+            ).fetchone()
+
+            if property_row is None:
+                return False, "Property not found."
+
+            room_count = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM rooms
+                WHERE property_id = ?
+                """,
+                (property_id,),
+            ).fetchone()[0]
+
+            if room_count > 0:
+                return (
+                    False,
+                    f"Cannot delete '{property_row['property_name']}' "
+                    f"because it has {room_count} associated room(s). "
+                    "Preserve its records and remove or archive the "
+                    "property only through a safe workflow.",
+                )
+
+            connection.execute(
+                """
+                DELETE FROM properties
+                WHERE property_id = ?
+                """,
+                (property_id,),
+            )
+
+        return (
+            True,
+            f"Property '{property_row['property_name']}' deleted successfully.",
+        )
+
+    except sqlite3.Error as error:
+        return False, f"Could not delete property: {error}"
+
+def get_property_room_summary(property_id):
+    """Return total, occupied, and vacant room counts for a property."""
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_rooms,
+                SUM(CASE WHEN status = 'occupied' THEN 1 ELSE 0 END)
+                    AS occupied_rooms,
+                SUM(CASE WHEN status = 'vacant' THEN 1 ELSE 0 END)
+                    AS vacant_rooms
+            FROM rooms
+            WHERE property_id = ?
+            """,
+            (property_id,),
+        ).fetchone()
+
+    total = row["total_rooms"] or 0
+    occupied = row["occupied_rooms"] or 0
+    vacant = row["vacant_rooms"] or 0
+
+    occupancy_rate = (occupied / total * 100) if total else 0
+
+    return {
+        "total_rooms": total,
+        "occupied_rooms": occupied,
+        "vacant_rooms": vacant,
+        "occupancy_rate": round(occupancy_rate, 1),
+    }    
+
+def add_room(property_id, room_number, monthly_rent):
+    """Add a vacant room to an existing property."""
+
+    room_number = str(room_number).strip()
+
+    if not room_number:
+        return False, "Room number is required."
+
+    try:
+        monthly_rent = float(monthly_rent)
+
+        if monthly_rent <= 0:
+            return False, "Monthly rent must be greater than zero."
+
+    except (TypeError, ValueError):
+        return False, "Please enter a valid monthly rent."
+
+    try:
+        with get_connection() as connection:
+
+            # Verify that the property exists.
+            property_row = connection.execute(
+                "SELECT property_name FROM properties WHERE property_id = ?",
+                (property_id,)
+            ).fetchone()
+
+            if property_row is None:
+                return False, "Selected property does not exist."
+
+            # Insert the room as vacant.
+            connection.execute(
+                """
+                INSERT INTO rooms (
+                    property_id,
+                    room_number,
+                    monthly_rent,
+                    status
+                )
+                VALUES (?, ?, ?, 'vacant')
+                """,
+                (property_id, room_number, monthly_rent)
+            )
+
+        return True, f"Room {room_number} added successfully!"
+
+    except sqlite3.IntegrityError:
+        return False, (
+            f"Room {room_number} already exists in this property."
+        )
+
+    except sqlite3.Error as error:
+        return False, f"Database error: {error}"
