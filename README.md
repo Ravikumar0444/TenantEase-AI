@@ -16,6 +16,12 @@ The goal is to demonstrate how AI and data-driven insights can help property man
 
 > **Disclaimer:** This is an independently developed proof of concept for an AI/ML Engineer Intern technical assessment at Cynbit Technologies. It is not an official TenantEase product and is not integrated with Cynbit Technologies' systems. The application uses demonstration data.
 
+## 🚀 Live Demo
+
+**Try TenantEase AI Assistant:** [Open the Live Application](https://tenantease-assistant.streamlit.app/)
+
+> **Note:** This is a demonstration application. It uses demonstration data, and AI-powered features require valid Google Gemini API configuration. Availability of AI responses depends on the API service and account quota.
+
 ---
 
 ## 📌 Table of Contents
@@ -292,6 +298,23 @@ http://localhost:8501
 Open the displayed URL in your browser to access the application.
 
 ---
+
+## ☁️ Deployment
+
+TenantEase AI Assistant is deployed using Streamlit Community Cloud.
+
+### Configuration
+
+Configure the following secrets in your Streamlit app settings:
+
+- `GEMINI_API_KEY`: Your Google Gemini API key.
+- `GEMINI_MODEL`: A model identifier supported by your API key.
+
+Example configuration:
+
+```toml
+GEMINI_API_KEY = "your_gemini_api_key"
+GEMINI_MODEL = "your_available_gemini_model"
 
 ## ▶️ Running the Application After Setup
 
