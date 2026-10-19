@@ -86,12 +86,13 @@ def get_dashboard_metrics():
     }
 
 def get_tenant_payment_records():
-    """Return October 2026 payment records for active tenants only."""
+    """Return October 2026 outstanding payment records for active tenants."""
 
     with get_connection() as connection:
         rows = connection.execute(
             """
             SELECT
+                t.tenant_id,
                 t.tenant_name,
                 pr.property_name,
                 r.room_number,
@@ -110,7 +111,8 @@ def get_tenant_payment_records():
                 ON r.property_id = pr.property_id
             WHERE p.rent_month = ?
               AND t.is_active = 1
-            ORDER BY p.due_date
+              AND p.amount_due > p.amount_paid
+            ORDER BY p.due_date ASC
             """,
             ("2026-10",),
         ).fetchall()
@@ -126,12 +128,10 @@ def add_tenant(
     lease_end,
 ):
     """
-    Add a tenant to a vacant room.
-
-    Returns:
-        (True, success_message) if successful.
-        (False, error_message) if unsuccessful.
+    Add a tenant to a vacant room and create the initial rent payment.
     """
+
+    from datetime import date
 
     tenant_name = tenant_name.strip()
     email = email.strip() or None
@@ -142,7 +142,23 @@ def add_tenant(
         return False, "Tenant name is required."
 
     # Validate lease dates.
-    if lease_start and lease_end and lease_end < lease_start:
+    try:
+        start_date = (
+            date.fromisoformat(str(lease_start))
+            if lease_start
+            else None
+        )
+
+        end_date = (
+            date.fromisoformat(str(lease_end))
+            if lease_end
+            else None
+        )
+
+    except (ValueError, TypeError):
+        return False, "Invalid lease date. Please use YYYY-MM-DD format."
+
+    if start_date and end_date and end_date < start_date:
         return False, "Lease end date cannot be before lease start date."
 
     try:
@@ -151,7 +167,7 @@ def add_tenant(
             # Check whether the selected room exists.
             room = connection.execute(
                 """
-                SELECT room_id, status
+                SELECT room_id, status, monthly_rent
                 FROM rooms
                 WHERE room_id = ?
                 """,
@@ -165,8 +181,8 @@ def add_tenant(
             if room["status"] != "vacant":
                 return False, "This room is already occupied."
 
-            # Insert tenant details.
-            connection.execute(
+            # Add the tenant.
+            cursor = connection.execute(
                 """
                 INSERT INTO tenants (
                     room_id,
@@ -183,12 +199,14 @@ def add_tenant(
                     tenant_name,
                     email,
                     phone,
-                    lease_start,
-                    lease_end,
+                    start_date.isoformat() if start_date else None,
+                    end_date.isoformat() if end_date else None,
                 ),
             )
 
-            # Update the room status.
+            tenant_id = cursor.lastrowid
+
+            # Mark the room as occupied.
             connection.execute(
                 """
                 UPDATE rooms
@@ -198,17 +216,46 @@ def add_tenant(
                 (room_id,),
             )
 
-        return True, f"Tenant '{tenant_name}' added successfully!"
+            # Create the initial rent payment for the lease start month.
+            if start_date:
+                rent_month = start_date.strftime("%Y-%m")
+                monthly_rent = float(room["monthly_rent"])
 
-    except sqlite3.IntegrityError:
-        return False, (
-            "Could not add tenant. The room may already be assigned "
-            "to another tenant."
+                connection.execute(
+                    """
+                    INSERT INTO payments (
+                        tenant_id,
+                        rent_month,
+                        amount_due,
+                        amount_paid,
+                        due_date,
+                        payment_date,
+                        status
+                    )
+                    VALUES (?, ?, ?, 0, ?, NULL, 'pending')
+                    """,
+                    (
+                        tenant_id,
+                        rent_month,
+                        monthly_rent,
+                        start_date.isoformat(),
+                    ),
+                )
+
+        return True, (
+            f"Tenant '{tenant_name}' added successfully, "
+            "and the initial rent payment record was created."
+            if start_date
+            else f"Tenant '{tenant_name}' added successfully. "
+                 "No rent payment was created because the lease start date is missing."
         )
+
+    except sqlite3.IntegrityError as error:
+        return False, f"Could not add tenant: {error}"
 
     except sqlite3.Error as error:
         return False, f"Database error: {error}"
-
+    
 def get_vacant_rooms():
     """Return all vacant rooms with their property names."""
 

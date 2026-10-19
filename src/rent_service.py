@@ -54,8 +54,9 @@ def get_outstanding_rent(rent_month=None):
 
     return float(result["outstanding_rent"])
 
-
 def get_overdue_payments(as_of=None):
+    """Return active tenants with unpaid rent, including payments due today."""
+
     if as_of is None:
         as_of = date.today()
 
@@ -63,6 +64,7 @@ def get_overdue_payments(as_of=None):
 
     query = """
         SELECT
+            t.tenant_id,
             t.tenant_name,
             pr.property_name,
             r.room_number,
@@ -79,13 +81,13 @@ def get_overdue_payments(as_of=None):
             ON t.room_id = r.room_id
         JOIN properties pr
             ON r.property_id = pr.property_id
-        WHERE p.due_date < ?
-          AND p.amount_paid < p.amount_due
+        WHERE p.amount_due > p.amount_paid
+          AND t.is_active = 1
         ORDER BY p.due_date ASC
     """
 
     with get_connection() as connection:
-        rows = connection.execute(query, (as_of,)).fetchall()
+        rows = connection.execute(query).fetchall()
 
     return [dict(row) for row in rows]
 
@@ -257,5 +259,85 @@ def get_tenant_by_name(tenant_name):
             """,
             (f"%{tenant_name.strip()}%",),
         ).fetchall()
+
+    return [dict(row) for row in rows]
+
+def settle_all_tenant_payments(tenant_id):
+    """
+    Settle all outstanding payments for a tenant.
+
+    Updates payment records while preserving payment history.
+    Returns (success, message, total_settled).
+    """
+
+    with get_connection() as connection:
+        tenant = connection.execute(
+            """
+            SELECT tenant_id, tenant_name
+            FROM tenants
+            WHERE tenant_id = ?
+              AND is_active = 1
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+        if tenant is None:
+            return False, "Active tenant not found.", 0.0
+
+        payments = connection.execute(
+            """
+            SELECT payment_id, amount_due, amount_paid
+            FROM payments
+            WHERE tenant_id = ?
+              AND amount_due > amount_paid
+            """,
+            (tenant_id,),
+        ).fetchall()
+
+        if not payments:
+            return False, "This tenant has no outstanding payments.", 0.0
+
+        total_settled = sum(
+            float(payment["amount_due"] - payment["amount_paid"])
+            for payment in payments
+        )
+
+        today = date.today().isoformat()
+
+        connection.execute(
+            """
+            UPDATE payments
+            SET amount_paid = amount_due,
+                status = 'paid',
+                payment_date = ?
+            WHERE tenant_id = ?
+              AND amount_due > amount_paid
+            """,
+            (today, tenant_id),
+        )
+
+    return (
+        True,
+        f"All outstanding payments for {tenant['tenant_name']} have been settled.",
+        total_settled,
+    )
+
+def get_tenants_with_outstanding_payments():
+    """Return active tenants who have outstanding payment balances."""
+
+    query = """
+        SELECT DISTINCT
+            t.tenant_id,
+            t.tenant_name
+        FROM tenants t
+        JOIN payments p
+            ON t.tenant_id = p.tenant_id
+        WHERE t.is_active = 1
+          AND p.amount_due > p.amount_paid
+        ORDER BY t.tenant_name
+    """
+
+    with get_connection() as connection:
+        rows = connection.execute(query).fetchall()
 
     return [dict(row) for row in rows]

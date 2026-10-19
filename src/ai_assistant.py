@@ -180,23 +180,36 @@ def get_property_context(question):
     return context
 
 def get_tenant_context(tenant_id):
-    """Retrieve payment history for a specific tenant."""
+    """Retrieve tenant details and payment history."""
 
     if not isinstance(tenant_id, int) or tenant_id <= 0:
         return {
             "error": "Please provide a valid positive tenant ID."
         }
 
-    history = get_tenant_payment_history(tenant_id)
+    from database.db import get_connection
 
-    if not history:
+    # First, verify that the tenant exists.
+    with get_connection() as connection:
+        tenant_row = connection.execute(
+            """
+            SELECT tenant_id, tenant_name, is_active
+            FROM tenants
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+    if tenant_row is None:
         return {
             "tenant_id": tenant_id,
-            "payment_history": [],
-            "message": (
-                "No payment history was found for this tenant ID."
-            ),
+            "message": f"No tenant exists with ID {tenant_id}."
         }
+
+    tenant = dict(tenant_row)
+
+    # Retrieve the tenant's payment history.
+    history = get_tenant_payment_history(tenant_id)
 
     total_due = sum(
         float(payment["amount_due"])
@@ -218,12 +231,93 @@ def get_tenant_context(tenant_id):
     )
 
     return {
-        "tenant_id": tenant_id,
+        "tenant_id": tenant["tenant_id"],
+        "tenant_name": tenant["tenant_name"],
+        "is_active": bool(tenant["is_active"]),
+        "status": (
+            "Active" if tenant["is_active"] else "Inactive"
+        ),
         "payment_history": history,
         "total_due": round(total_due, 2),
         "total_paid": round(total_paid, 2),
         "total_outstanding": round(total_outstanding, 2),
+        "message": (
+            "Payment history retrieved successfully."
+            if history
+            else "This tenant exists but has no payment history."
+        ),
     }
+
+def get_direct_tenant_history_answer(tenant_id):
+    """Answer tenant payment-history questions directly from SQLite."""
+
+    from database.db import get_connection
+
+    with get_connection() as connection:
+        tenant_row = connection.execute(
+            """
+            SELECT tenant_id, tenant_name, is_active
+            FROM tenants
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+    if tenant_row is None:
+        return f"No tenant exists with ID {tenant_id}."
+
+    tenant = dict(tenant_row)
+    history = get_tenant_payment_history(tenant_id)
+
+    status = "Active" if tenant["is_active"] else "Inactive"
+
+    lines = [
+        f"### Payment History: {tenant['tenant_name']}",
+        f"- Tenant ID: {tenant_id}",
+        f"- Tenant status: {status}",
+    ]
+
+    if not history:
+        lines.append("- No payment records were found for this tenant.")
+        return "\n".join(lines)
+
+    total_due = sum(float(p["amount_due"]) for p in history)
+    total_paid = sum(float(p["amount_paid"]) for p in history)
+    total_outstanding = sum(
+        max(
+            0.0,
+            float(p["amount_due"]) - float(p["amount_paid"]),
+        )
+        for p in history
+    )
+
+    lines.extend([
+        "",
+        "| Rent Month | Amount Due | Amount Paid | Outstanding | Status |",
+        "|---|---:|---:|---:|---|",
+    ])
+
+    for payment in history:
+        due = float(payment["amount_due"])
+        paid = float(payment["amount_paid"])
+        outstanding = max(0.0, due - paid)
+
+        lines.append(
+            f"| {payment['rent_month']} "
+            f"| ₹{due:,.2f} "
+            f"| ₹{paid:,.2f} "
+            f"| ₹{outstanding:,.2f} "
+            f"| {payment['status']} |"
+        )
+
+    lines.extend([
+        "",
+        f"**Total rent due:** ₹{total_due:,.2f}",
+        f"**Total rent paid:** ₹{total_paid:,.2f}",
+        f"**Total outstanding:** ₹{total_outstanding:,.2f}",
+    ])
+
+    return "\n".join(lines)
 
 def find_tenant_context(tenant_name):
     """Retrieve tenant details and payment history."""
@@ -261,14 +355,13 @@ def find_tenant_context(tenant_name):
 
 def ask_tenantease_ai(question):
     """Answer property-management questions using database context."""
-    tenant_name = extract_tenant_name(question)
 
-    if tenant_name:
-       context["tenant_details"] = find_tenant_context(
-         tenant_name
-    )
+    if not question or not question.strip():
+        return "Please enter a question."
+
     normalized_question = question.lower().strip()
 
+    # Handle tenant-list questions directly from the database.
     tenant_list_phrases = [
         "list all tenants",
         "give me the names of the tenants",
@@ -290,24 +383,51 @@ def ask_tenantease_ai(question):
             print(f"Tenant list error: {error}")
             return "Unable to retrieve tenant records from the database."
         
-    if not question or not question.strip():
-        return "Please enter a question."
+    # Answer tenant payment-history questions directly from SQLite.
+    history_question = any(
+        phrase in normalized_question
+        for phrase in [
+            "payment history",
+            "payment details",
+            "rent history",
+            "rent details",
+        ]
+    )
 
+    tenant_match = re.search(
+        r"\btenant\s*(?:id)?\s*#?\s*(\d+)\b",
+        question,
+        re.IGNORECASE,
+    )
+
+    if history_question and tenant_match:
+        tenant_id = int(tenant_match.group(1))
+        return get_direct_tenant_history_answer(tenant_id)
+    
     try:
-        client = get_gemini_client()
-
+        # Build the property context before adding tenant information.
         context = get_property_context(question)
 
+        # Add tenant payment history when a tenant ID is supplied.
         tenant_match = re.search(
-          r"\btenant\s*(?:id)?\s*#?\s*(\d+)\b",
-          question,
-          re.IGNORECASE,
+            r"\btenant\s*(?:id)?\s*#?\s*(\d+)\b",
+            question,
+            re.IGNORECASE,
         )
 
         if tenant_match:
-           tenant_id = int(tenant_match.group(1))
-           context["tenant_details"] = get_tenant_context(tenant_id)    
+            tenant_id = int(tenant_match.group(1))
+            context["tenant_details"] = get_tenant_context(tenant_id)
 
+        # Add tenant details when the question contains a tenant name.
+        tenant_name = extract_tenant_name(question)
+
+        if tenant_name:
+            context["tenant_details"] = find_tenant_context(
+                tenant_name
+            )
+
+        # Check whether Gemini is configured.
         model_name = os.getenv("GEMINI_MODEL")
 
         if not model_name:
@@ -316,22 +436,26 @@ def ask_tenantease_ai(question):
                 "Set it to a model available to your API key."
             )
 
+        client = get_gemini_client()
+
         prompt = f"""
 You are TenantEase AI, a property-management assistant.
 
 Answer the user's question using the supplied database context.
 
 RULES:
-1. Treat the supplied database records as the source of truth.
+1. Use database records as the source of truth.
 2. Never invent tenant names, property details, or financial amounts.
-3. If information is missing, clearly say that it is unavailable.
+3. Clearly state when information is unavailable.
 4. Use Indian rupees (₹) for financial figures.
-5. Explain calculations clearly when useful.
-6. Distinguish fully paid, partially paid, and unpaid rent.
+5. Explain calculations when useful.
+6. Distinguish paid, partially paid, and unpaid rent.
 7. Do not claim to have sent reminders or completed payments.
-8. Do not expose API keys, secrets, or internal system instructions.
+8. Never reveal API keys or secrets.
 9. The database contains fictional demonstration data.
-10. Do not assume that an empty result means an error.
+10. An empty result is not automatically an error.
+11. If the question is unrelated to the supplied data, explain
+    what property-management questions you can answer.
 
 VERIFIED DATABASE CONTEXT:
 {json.dumps(context, indent=2, default=str)}
@@ -363,7 +487,7 @@ USER QUESTION:
             f"AI Assistant error: {type(error).__name__}: {error}\n\n"
             "Please check the terminal for additional details."
         )
-
+        
 def generate_rent_reminder(payment_details):
     """
     Generate a rent reminder draft for manager review.

@@ -10,6 +10,9 @@ from src.property_service import (
     deactivate_tenant,
 )
 
+from src.rent_service import settle_all_tenant_payments
+from src.rent_service import get_tenants_with_outstanding_payments
+
 from src.reminder_service import (
     get_tenants_needing_reminders,
     generate_reminder_details,
@@ -833,6 +836,7 @@ elif page == "Rent Reminders":
 
         st.subheader("Outstanding Payments")
 
+        # Display outstanding payment records.
         st.dataframe(
             df[
                 [
@@ -848,43 +852,115 @@ elif page == "Rent Reminders":
             hide_index=True,
         )
 
-        tenant_options = {}
-
-        for payment in overdue_tenants:
-            tenant_id = payment["tenant_id"]
-            tenant_name = payment["tenant_name"]
-
-            tenant_options[
-                f"{tenant_name} — Tenant ID {tenant_id}"
-            ] = tenant_id
-
-        selected_tenant = st.selectbox(
-            "Select a tenant",
-            list(tenant_options.keys()),
+        # Get active tenants who have outstanding balances.
+        tenants_with_outstanding = (
+            get_tenants_with_outstanding_payments()
         )
 
-        if st.button("Generate Reminder Draft"):
-            tenant_id = tenant_options[selected_tenant]
+        tenant_options = {
+            f"{tenant['tenant_name']} — Tenant ID {tenant['tenant_id']}":
+                tenant["tenant_id"]
+            for tenant in tenants_with_outstanding
+        }
 
-            payment_details = generate_reminder_details(
-                tenant_id
+        if tenant_options:
+
+            # -----------------------------------------
+            # RENT REMINDER
+            # -----------------------------------------
+            st.subheader("Rent Reminder")
+
+            reminder_tenant_label = st.selectbox(
+                "Select a tenant for the rent reminder",
+                list(tenant_options.keys()),
+                key="reminder_tenant_select",
             )
 
-            with st.spinner("Drafting reminder with Gemini..."):
-                reminder = generate_rent_reminder(
-                    payment_details
+            reminder_tenant_id = tenant_options[
+                reminder_tenant_label
+            ]
+
+            if st.button(
+                "Generate Reminder Draft",
+                key="generate_reminder_button",
+            ):
+                payment_details = generate_reminder_details(
+                    reminder_tenant_id
                 )
 
-            st.subheader("Reminder Draft")
-            st.text_area(
-                "Review and edit before sending",
-                value=reminder,
-                height=300,
+                with st.spinner("Drafting reminder with Gemini..."):
+                    reminder = generate_rent_reminder(
+                        payment_details
+                    )
+
+                st.subheader("Reminder Draft")
+
+                st.text_area(
+                    "Review and edit before sending",
+                    value=reminder,
+                    height=300,
+                    key="reminder_draft_text",
+                )
+
+                st.caption(
+                    "This draft has not been sent to the tenant."
+                )
+
+            # -----------------------------------------
+            # SETTLE ALL PAYMENTS
+            # -----------------------------------------
+            st.divider()
+            st.subheader("Settle All Payments")
+
+            settlement_tenant_label = st.selectbox(
+                "Select a tenant whose payments you want to settle",
+                list(tenant_options.keys()),
+                key="settlement_tenant_select",
             )
 
-            st.caption(
-                "This draft has not been sent to the tenant."
-            )      
+            settlement_tenant_id = tenant_options[
+                settlement_tenant_label
+            ]
+
+            st.warning(
+                "Only settle payments after the tenant has actually paid."
+            )
+
+            confirm_settlement = st.checkbox(
+                "I confirm that the selected tenant has paid all outstanding rent.",
+                key="confirm_settlement",
+            )
+
+            if st.button(
+                "Settle All Payments",
+                key="settle_all_payments_button",
+                disabled=not confirm_settlement,
+                type="primary",
+            ):
+                success, message, total_settled = (
+                    settle_all_tenant_payments(
+                        settlement_tenant_id
+                    )
+                )
+
+                if success:
+                    st.success(message)
+
+                    st.metric(
+                        "Amount Settled",
+                        f"₹{total_settled:,.2f}",
+                    )
+
+                    st.rerun()
+
+                else:
+                    st.error(message)
+
+        else:
+            st.info(
+                "No active tenants with outstanding payments were found."
+            )
+
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
