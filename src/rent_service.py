@@ -227,3 +227,35 @@ def get_vacant_rooms():
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+def get_tenant_by_name(tenant_name):
+    """
+    Find tenants by name, including their contact details.
+    Case-insensitive partial matching is supported.
+    """
+
+    if not tenant_name or not tenant_name.strip():
+        return []
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                t.tenant_id,
+                t.tenant_name,
+                t.email,
+                t.phone,
+                t.lease_start,
+                t.lease_end,
+                r.room_number,
+                p.property_name
+            FROM tenants t
+            JOIN rooms r ON t.room_id = r.room_id
+            JOIN properties p ON r.property_id = p.property_id
+            WHERE LOWER(t.tenant_name) LIKE LOWER(?)
+            ORDER BY t.tenant_name
+            """,
+            (f"%{tenant_name.strip()}%",),
+        ).fetchall()
+
+    return [dict(row) for row in rows]

@@ -23,15 +23,14 @@ CREATE TABLE IF NOT EXISTS rooms (
 
 CREATE TABLE IF NOT EXISTS tenants (
     tenant_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id INTEGER NOT NULL UNIQUE,
+    room_id INTEGER NOT NULL,
     tenant_name TEXT NOT NULL,
     email TEXT,
     phone TEXT,
     lease_start DATE,
     lease_end DATE,
-
-    FOREIGN KEY (room_id)
-        REFERENCES rooms(room_id)
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    FOREIGN KEY (room_id) REFERENCES rooms(room_id)
 );
 
 CREATE TABLE IF NOT EXISTS payments (

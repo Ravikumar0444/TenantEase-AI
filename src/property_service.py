@@ -17,6 +17,15 @@ def get_dashboard_metrics():
             "SELECT COUNT(*) FROM rooms"
         ).fetchone()[0]
 
+        # Active tenants
+        total_active_tenants = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM tenants
+            WHERE is_active = 1
+            """
+        ).fetchone()[0]
+
         # Occupied rooms
         occupied_rooms = connection.execute(
             """
@@ -44,7 +53,7 @@ def get_dashboard_metrics():
             """
         ).fetchone()[0]
 
-        # Total rent collected for October 2026
+        # Rent collected for October 2026
         rent_collected = connection.execute(
             """
             SELECT COALESCE(SUM(amount_paid), 0)
@@ -67,6 +76,8 @@ def get_dashboard_metrics():
     return {
         "total_properties": total_properties,
         "total_rooms": total_rooms,
+        "total_active_tenants": total_active_tenants,
+        "total_rooms": total_rooms,
         "occupied_rooms": occupied_rooms,
         "vacant_rooms": vacant_rooms,
         "expected_rent": expected_rent,
@@ -74,12 +85,10 @@ def get_dashboard_metrics():
         "outstanding_rent": outstanding_rent,
     }
 
-
 def get_tenant_payment_records():
-    """Return tenant payment records for October 2026."""
+    """Return October 2026 payment records for active tenants only."""
 
     with get_connection() as connection:
-
         rows = connection.execute(
             """
             SELECT
@@ -100,6 +109,7 @@ def get_tenant_payment_records():
             JOIN properties pr
                 ON r.property_id = pr.property_id
             WHERE p.rent_month = ?
+              AND t.is_active = 1
             ORDER BY p.due_date
             """,
             ("2026-10",),
@@ -220,29 +230,161 @@ def get_vacant_rooms():
 
     return [dict(room) for room in rooms]
 
-def get_all_tenants():
-    """Return all registered tenants with their room and property details."""
+def get_all_tenants(include_inactive=False):
+    """Return tenant records, optionally including inactive tenants."""
+
+    query = """
+        SELECT
+            t.tenant_id,
+            t.tenant_name,
+            t.email,
+            t.phone,
+            t.lease_start,
+            t.lease_end,
+            t.is_active,
+            t.room_id,
+            r.room_number,
+            r.monthly_rent,
+            r.status AS room_status,
+            p.property_name
+        FROM tenants AS t
+        JOIN rooms AS r
+            ON t.room_id = r.room_id
+        JOIN properties AS p
+            ON r.property_id = p.property_id
+    """
+
+    if not include_inactive:
+        query += " WHERE t.is_active = 1"
+
+    query += " ORDER BY t.tenant_name"
+
     with get_connection() as connection:
-        rows = connection.execute(
+        rows = connection.execute(query).fetchall()
+
+    return [dict(row) for row in rows]
+
+def delete_tenant(tenant_id):
+    """
+    Remove a tenant only when no payment records reference them.
+    Preserve financial history and release the room when possible.
+    """
+
+    with get_connection() as connection:
+        tenant = connection.execute(
+            """
+            SELECT tenant_id, tenant_name, room_id
+            FROM tenants
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+        if tenant is None:
+            return False, "Tenant not found."
+
+        payments = connection.execute(
             """
             SELECT
-                t.tenant_id,
-                t.tenant_name,
-                t.email,
-                t.phone,
-                t.lease_start,
-                t.lease_end,
-                r.room_number,
-                r.monthly_rent,
-                r.status AS room_status,
-                p.property_name
-            FROM tenants AS t
-            JOIN rooms AS r
-                ON t.room_id = r.room_id
-            JOIN properties AS p
-                ON r.property_id = p.property_id
-            ORDER BY t.tenant_name
-            """
-        ).fetchall()
+                COUNT(*) AS payment_count,
+                COALESCE(SUM(amount_due - amount_paid), 0)
+                    AS total_outstanding
+            FROM payments
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
 
-    return [dict(row) for row in rows]    
+        if payments["total_outstanding"] > 0:
+            return (
+                False,
+                "This tenant has outstanding rent. "
+                "Please settle the balance before deletion.",
+            )
+
+        if payments["payment_count"] > 0:
+            return (
+                False,
+                "This tenant has payment history and cannot be "
+                "permanently deleted. Use tenant deactivation "
+                "to preserve financial records.",
+            )
+
+        connection.execute(
+            """
+            DELETE FROM tenants
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        )
+
+        connection.execute(
+            """
+            UPDATE rooms
+            SET status = 'vacant'
+            WHERE room_id = ?
+            """,
+            (tenant["room_id"],),
+        )
+
+    return True, f"Tenant '{tenant['tenant_name']}' deleted successfully."
+
+def deactivate_tenant(tenant_id):
+    """Deactivate a tenant while preserving their payment history."""
+
+    with get_connection() as connection:
+        tenant = connection.execute(
+            """
+            SELECT tenant_id, tenant_name, room_id, is_active
+            FROM tenants
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+        if tenant is None:
+            return False, "Tenant not found."
+
+        if tenant["is_active"] == 0:
+            return False, "This tenant is already inactive."
+
+        payments = connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(amount_due - amount_paid), 0)
+                    AS total_outstanding
+            FROM payments
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+
+        if payments["total_outstanding"] > 0:
+            return (
+                False,
+                "This tenant has outstanding rent. "
+                "Please settle the balance before deactivation.",
+            )
+
+        connection.execute(
+            """
+            UPDATE tenants
+            SET is_active = 0
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        )
+
+        connection.execute(
+            """
+            UPDATE rooms
+            SET status = 'vacant'
+            WHERE room_id = ?
+            """,
+            (tenant["room_id"],),
+        )
+
+    return True, (
+        f"Tenant '{tenant['tenant_name']}' deactivated successfully. "
+        "Payment history has been preserved."
+    )

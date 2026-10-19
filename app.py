@@ -6,7 +6,10 @@ from src.property_service import (
     add_tenant,
     get_vacant_rooms,
     get_all_tenants,
+    delete_tenant,
+    deactivate_tenant,
 )
+
 from src.reminder_service import (
     get_tenants_needing_reminders,
     generate_reminder_details,
@@ -626,8 +629,8 @@ elif page == "Tenants":
             "tenant_name",
             "email",
             "phone",
-            "property_name",
             "room_number",
+            "property_name",
             "monthly_rent",
             "lease_start",
             "lease_end",
@@ -650,7 +653,50 @@ elif page == "Tenants":
                 "lease_end": st.column_config.DateColumn("Lease End"),
             },
         )
+        st.divider()
 
+        st.subheader("Deactivate Tenant")
+
+        tenants = get_all_tenants()
+
+        if tenants:
+            tenant_options = {
+                f"{tenant['tenant_name']} — "
+                f"{tenant['property_name']}, Room {tenant['room_number']} "
+                f"(ID: {tenant['tenant_id']})": tenant["tenant_id"]
+                for tenant in tenants
+            }
+
+            selected_tenant = st.selectbox(
+                "Select a tenant to deactivate",
+                options=list(tenant_options.keys()),
+                key="deactivate_tenant_select",
+            )
+
+            # Get the ID belonging to the selected tenant.
+            tenant_id = tenant_options[selected_tenant]
+
+            confirm_deactivate = st.checkbox(
+                "I confirm that I want to deactivate this tenant.",
+                key="confirm_deactivate_tenant",
+            )
+
+            if st.button(
+                "Deactivate Tenant",
+                key="deactivate_tenant_button",
+                type="primary",
+                disabled=not confirm_deactivate,
+            ):
+                success, message = deactivate_tenant(tenant_id)
+
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
+
+        else:
+            st.info("There are no active tenants available to deactivate.")
         st.caption(f"Total registered tenants: {len(filtered_df)}")
 
 
